@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -7,6 +8,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
 <title>Surveillance WiFi</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <style>
   :root {
     --bg: #0b0e13; --panel: #131822; --panel-2: #1a2130; --text: #eef1f6;
@@ -38,7 +41,7 @@
   }
   .screen { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
   .center { align-items: center; justify-content: center; text-align: center; }
-  header.top, .toolbar {
+  .toolbar {
     display: flex; align-items: center; justify-content: space-between;
     padding: 10px 4px 18px 4px;
   }
@@ -77,7 +80,7 @@
   .video-wrap {
     position: relative; border-radius: 18px; overflow: hidden; background: #000;
     display: flex; align-items: center; justify-content: center;
-    min-height: 32vh; border: 1px solid var(--border); flex-shrink: 0;
+    min-height: 30vh; border: 1px solid var(--border); flex-shrink: 0;
   }
   video { width: 100%; height: 100%; object-fit: cover; background: #000; }
   .overlay-top {
@@ -95,11 +98,16 @@
   }
   .card h3 { margin: 0 0 8px 0; font-size: 14.5px; }
   .card p.hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 10px 0; }
+  .qr-box {
+    display: flex; align-items: center; justify-content: center;
+    background: #fff; border-radius: 12px; padding: 14px; margin: 12px auto; width: fit-content;
+  }
+  .qr-box img, .qr-box canvas, .qr-box table { display: block; }
   textarea.code-box {
-    width: 100%; min-height: 78px; resize: vertical;
+    width: 100%; min-height: 60px; resize: vertical;
     background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
     border-radius: 10px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11.5px; word-break: break-all;
+    font-size: 11px; word-break: break-all;
   }
   .btn-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
   .status-text { color: var(--muted); font-size: 13.5px; margin-top: 12px; min-height: 18px; text-align: center; }
@@ -114,6 +122,30 @@
     color: #fff; font-size: 12px; font-weight: 700; margin-right: 8px; flex-shrink:0;
   }
   .step-title { display:flex; align-items:center; }
+  details.manual { margin-top: 10px; }
+  details.manual summary { color: var(--muted); font-size: 12.5px; cursor: pointer; }
+
+  .scan-overlay {
+    position: fixed; inset: 0; background: #000; z-index: 999;
+    display: flex; flex-direction: column;
+  }
+  .scan-overlay video { flex: 1; object-fit: cover; }
+  .scan-frame {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 62vw; height: 62vw; max-width: 320px; max-height: 320px;
+    border: 3px solid #fff; border-radius: 18px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.35);
+  }
+  .scan-topbar {
+    position: absolute; top: 0; left: 0; right: 0;
+    padding: env(safe-area-inset-top, 16px) 16px 12px 16px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.6), transparent);
+    color: #fff; z-index: 2;
+  }
+  .scan-hint {
+    position: absolute; bottom: 40px; left: 0; right: 0; text-align: center;
+    color: #fff; font-size: 14px; z-index: 2; padding: 0 20px;
+  }
 </style>
 </head>
 <body>
@@ -143,10 +175,10 @@
   var app = document.getElementById("app");
   function render(node) { app.innerHTML = ""; app.appendChild(node); }
 
-  var ICE_SERVERS = [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:global.stun.twilio.com:3478" }
-  ];
+  // No STUN servers on purpose: this app only pairs devices on the same
+  // local WiFi network, so only host (local) ICE candidates are needed,
+  // which keeps the QR code small.
+  var ICE_SERVERS = [];
 
   function encodeDesc(desc) {
     return btoa(unescape(encodeURIComponent(JSON.stringify({ type: desc.type, sdp: desc.sdp }))));
@@ -169,23 +201,92 @@
       pc.addEventListener("icegatheringstatechange", check);
       setTimeout(function() {
         if (!done) { done = true; pc.removeEventListener("icegatheringstatechange", check); resolve(); }
-      }, timeoutMs || 4000);
+      }, timeoutMs || 3000);
     });
   }
 
-  async function shareOrCopy(text, label, statusFn) {
-    if (navigator.share) {
-      try {
-        await navigator.share({ text: text });
-        return;
-      } catch (e) { /* user cancelled or unsupported, fall through to copy */ }
+  function renderQR(container, text) {
+    container.innerHTML = "";
+    if (typeof QRCode === "undefined") {
+      container.textContent = "Bibliothèque QR indisponible (vérifie ta connexion internet).";
+      return;
     }
+    var tn = 4, ok = false;
+    while (!ok && tn <= 40) {
+      try {
+        new QRCode(container, { text: text, width: 240, height: 240, correctLevel: QRCode.CorrectLevel.L, typeNumber: tn });
+        ok = true;
+      } catch (e) {
+        container.innerHTML = "";
+        tn++;
+      }
+    }
+    if (!ok) container.textContent = "Code trop long pour tenir dans un QR code.";
+  }
+
+  async function copyText(text, statusFn) {
     try {
       await navigator.clipboard.writeText(text);
-      statusFn && statusFn(label + " copié — colle-le dans Messages ou AirDrop.");
+      statusFn && statusFn("Code copié dans le presse-papiers.");
     } catch (e) {
-      statusFn && statusFn("Sélectionne le texte ci-dessus et copie-le manuellement.");
+      statusFn && statusFn("Sélectionne le texte et copie-le manuellement.");
     }
+  }
+
+  // Opens a fullscreen camera scanner. Resolves with decoded text, or
+  // rejects if the user cancels or the camera can't be opened.
+  function scanQRCode(hintText) {
+    return new Promise(function(resolve, reject) {
+      var video = el("video", { autoplay: "", playsinline: "", muted: "true" });
+      var canvas = document.createElement("canvas");
+      var ctx = canvas.getContext("2d", { willReadFrequently: true });
+      var raf = null, stream = null, done = false;
+
+      var overlay = el("div", { class: "scan-overlay" }, [
+        video,
+        el("div", { class: "scan-frame" }),
+        el("div", { class: "scan-topbar" }, [
+          el("span", {}, ["Scanner le QR code"]),
+          el("button", { class: "iconbtn", onclick: function() { finish(null); } }, ["Annuler"])
+        ]),
+        el("div", { class: "scan-hint" }, [hintText || "Cadre le QR code affiché sur l'autre téléphone."])
+      ]);
+      document.body.appendChild(overlay);
+
+      function finish(result) {
+        if (done) return;
+        done = true;
+        if (raf) cancelAnimationFrame(raf);
+        if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
+        overlay.remove();
+        if (result) resolve(result); else reject(new Error("cancelled"));
+      }
+
+      function tick() {
+        if (done) return;
+        if (video.readyState >= 2 && typeof jsQR === "function") {
+          canvas.width = video.videoWidth || 640;
+          canvas.height = video.videoHeight || 480;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          try {
+            var imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            var code = jsQR(imageData.data, imageData.width, imageData.height);
+            if (code && code.data) { finish(code.data); return; }
+          } catch (e) {}
+        }
+        raf = requestAnimationFrame(tick);
+      }
+
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } })
+        .then(function(s) {
+          if (done) { s.getTracks().forEach(function(t){t.stop();}); return; }
+          stream = s;
+          video.srcObject = s;
+          video.play().catch(function(){});
+          tick();
+        })
+        .catch(function(e) { finish(null); reject(e); });
+    });
   }
 
   // ================= ACCUEIL =================
@@ -193,7 +294,7 @@
     return el("div", { class: "screen center" }, [
       el("div", { style: "font-size:40px;" }, ["📡"]),
       el("h1", {}, ["Surveillance WiFi"]),
-      el("p", { class: "sub" }, ["Diffusion vidéo directe entre deux iPhone, sans serveur ni enregistrement. Fonctionne partout où cette page est hébergée."]),
+      el("p", { class: "sub" }, ["Diffusion vidéo directe entre deux iPhone sur le même réseau WiFi, sans serveur ni enregistrement. Connexion par QR code, sans AirDrop."]),
       el("div", { class: "choice-grid" }, [
         el("div", { class: "choice", onclick: function() { render(ScreenCamera()); } }, [
           el("div", { class: "emoji" }, ["📷"]),
@@ -215,24 +316,52 @@
 
   // ================= CAMÉRA =================
   function ScreenCamera() {
-    var pc = null, stream = null;
+    var pc = null, videoSender = null, audioSender = null, liveStream = null;
     var container = el("div", { class: "screen" });
 
-    function setStatus(t) {
-      var s = container.querySelector(".status-text");
-      if (s) s.textContent = t;
-    }
+    function setStatus(t) { var s = container.querySelector(".status-text"); if (s) s.textContent = t; }
     function setLive(v) {
-      var dot = container.querySelector(".dot");
-      if (dot) dot.className = "dot" + (v ? " live" : "");
-      var label = container.querySelector(".conn-label");
-      if (label) label.textContent = v ? "En direct" : "Non connecté";
+      var dot = container.querySelector(".dot"); if (dot) dot.className = "dot" + (v ? " live" : "");
+      var label = container.querySelector(".conn-label"); if (label) label.textContent = v ? "En direct" : "Non connecté";
     }
 
-    async function init() {
+    function cleanup() {
+      if (liveStream) liveStream.getTracks().forEach(function(t) { t.stop(); });
+      if (pc) { try { pc.close(); } catch (e) {} }
+    }
+
+    async function createInvitation() {
+      cleanup();
+      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      videoSender = pc.addTransceiver("video", { direction: "sendonly" }).sender;
+      audioSender = pc.addTransceiver("audio", { direction: "sendonly" }).sender;
+      pc.onconnectionstatechange = function() {
+        if (pc.connectionState === "connected") { setLive(true); setStatus("Connexion établie."); }
+        if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) setLive(false);
+      };
+      setStatus("Génération du QR code d'invitation…");
+      var offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitIceComplete(pc, 3000);
+      var code = encodeDesc(pc.localDescription);
+      renderQR(container.querySelector(".offer-qr"), code);
+      container.querySelector(".offer-text").value = code;
+      container.querySelector(".step1-out").style.display = "block";
+      container.querySelector(".step2").style.display = "block";
+      setStatus("Fais scanner ce QR code par l'écran de contrôle.");
+    }
+
+    async function finalizeWithAnswer(answerText) {
+      try {
+        var desc = decodeDesc(answerText);
+        await pc.setRemoteDescription(desc);
+      } catch (e) {
+        setStatus("Réponse invalide. Réessaie.");
+        return;
+      }
       setStatus("Ouverture de la caméra…");
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        liveStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: true
         });
@@ -241,42 +370,23 @@
         return;
       }
       var v = container.querySelector("video");
-      if (v) v.srcObject = stream;
+      if (v) v.srcObject = liveStream;
+      var vt = liveStream.getVideoTracks()[0], at = liveStream.getAudioTracks()[0];
+      if (vt && videoSender) await videoSender.replaceTrack(vt);
+      if (at && audioSender) await audioSender.replaceTrack(at);
+      setStatus("Connexion en cours…");
     }
 
-    async function createInvitation() {
-      if (pc) { try { pc.close(); } catch (e) {} }
-      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-      stream.getTracks().forEach(function(t) { pc.addTrack(t, stream); });
-      pc.onconnectionstatechange = function() {
-        if (pc.connectionState === "connected") { setLive(true); setStatus("Connexion établie."); }
-        if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) { setLive(false); }
-      };
-      setStatus("Génération du code d'invitation…");
-      var offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitIceComplete(pc, 4000);
-      var code = encodeDesc(pc.localDescription);
-      container.querySelector(".offer-box").value = code;
-      container.querySelector(".step2").style.display = "block";
-      setStatus("Envoie ce code à l'écran de contrôle, puis colle sa réponse ci-dessous.");
-    }
-
-    async function acceptAnswer() {
-      var text = container.querySelector(".answer-input").value;
-      if (!text || !text.trim()) { setStatus("Colle d'abord la réponse reçue de l'écran de contrôle."); return; }
+    async function scanAnswer() {
       try {
-        var desc = decodeDesc(text);
-        await pc.setRemoteDescription(desc);
-        setStatus("Connexion en cours…");
-      } catch (e) {
-        setStatus("Code de réponse invalide. Vérifie le collage.");
-      }
+        var text = await scanQRCode("Cadre le QR code affiché sur l'écran de contrôle.");
+        await finalizeWithAnswer(text);
+      } catch (e) { /* annulé */ }
     }
 
     container.appendChild(
       el("div", { class: "toolbar" }, [
-        el("button", { class: "iconbtn", onclick: function() { if (stream) stream.getTracks().forEach(function(t){t.stop();}); if (pc) pc.close(); render(ScreenHome()); } }, ["← Retour"]),
+        el("button", { class: "iconbtn", onclick: function() { cleanup(); render(ScreenHome()); } }, ["← Retour"]),
         el("div", { class: "pill" }, [ el("span", { class: "dot" }), el("span", { class: "conn-label" }, ["Non connecté"]) ])
       ])
     );
@@ -291,30 +401,33 @@
     container.appendChild(
       el("div", { class: "card" }, [
         el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["1"]), el("h3", {}, ["Créer une invitation"]) ]),
-        el("p", { class: "hint" }, ["Génère un code, puis envoie-le à l'écran de contrôle (AirDrop, Messages…)."]),
+        el("p", { class: "hint" }, ["Génère un QR code que l'écran de contrôle va scanner."]),
         el("button", { class: "btn primary", onclick: createInvitation }, ["Créer une invitation"]),
-        el("textarea", { class: "code-box offer-box", readonly: "true", placeholder: "Le code apparaîtra ici…" }),
-        el("div", { class: "btn-row" }, [
-          el("button", { class: "btn ghost small", onclick: function() {
-            var t = container.querySelector(".offer-box").value;
-            if (t) shareOrCopy(t, "Le code", setStatus);
-          } }, ["Partager le code"])
+        el("div", { class: "step1-out", style: "display:none;" }, [
+          el("div", { class: "qr-box offer-qr" }),
+          el("details", { class: "manual" }, [
+            el("summary", {}, ["Le scan ne marche pas ? Copier le code à la place"]),
+            el("textarea", { class: "code-box offer-text", readonly: "true" }),
+            el("button", { class: "btn ghost small", style: "margin-top:8px;", onclick: function() { copyText(container.querySelector(".offer-text").value, setStatus); } }, ["Copier le code"])
+          ])
         ])
       ])
     );
 
     container.appendChild(
       el("div", { class: "card step2", style: "display:none;" }, [
-        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["2"]), el("h3", {}, ["Coller la réponse"]) ]),
-        el("p", { class: "hint" }, ["Colle ici le code que l'écran de contrôle t'a envoyé en retour."]),
-        el("textarea", { class: "code-box answer-input", placeholder: "Colle la réponse ici…" }),
-        el("button", { class: "btn success", style: "margin-top:10px;", onclick: acceptAnswer }, ["Connecter"])
+        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["2"]), el("h3", {}, ["Scanner la réponse"]) ]),
+        el("p", { class: "hint" }, ["Une fois l'écran de contrôle connecté, il affichera son propre QR code : scanne-le pour finaliser."]),
+        el("button", { class: "btn success", onclick: scanAnswer }, ["Scanner la réponse"]),
+        el("details", { class: "manual" }, [
+          el("summary", {}, ["Coller le code manuellement à la place"]),
+          el("textarea", { class: "code-box answer-input", placeholder: "Colle la réponse ici…" }),
+          el("button", { class: "btn ghost small", style: "margin-top:8px;", onclick: function() { finalizeWithAnswer(container.querySelector(".answer-input").value); } }, ["Connecter"])
+        ])
       ])
     );
 
     container.appendChild(el("div", { class: "status-text" }, [""]));
-
-    init();
     return container;
   }
 
@@ -323,25 +436,17 @@
     var pc = null;
     var container = el("div", { class: "screen" });
 
-    function setStatus(t) {
-      var s = container.querySelector(".status-text");
-      if (s) s.textContent = t;
-    }
+    function setStatus(t) { var s = container.querySelector(".status-text"); if (s) s.textContent = t; }
     function setLive(v) {
-      var dot = container.querySelector(".dot");
-      if (dot) dot.className = "dot" + (v ? " ok" : "");
-      var label = container.querySelector(".conn-label");
-      if (label) label.textContent = v ? "En direct" : "Non connecté";
-      var ph = container.querySelector(".placeholder");
-      if (ph) ph.style.display = v ? "none" : "flex";
+      var dot = container.querySelector(".dot"); if (dot) dot.className = "dot" + (v ? " ok" : "");
+      var label = container.querySelector(".conn-label"); if (label) label.textContent = v ? "En direct" : "Non connecté";
+      var ph = container.querySelector(".placeholder"); if (ph) ph.style.display = v ? "none" : "flex";
     }
 
-    async function acceptInvitation() {
-      var text = container.querySelector(".offer-input").value;
-      if (!text || !text.trim()) { setStatus("Colle d'abord le code reçu de la caméra."); return; }
+    async function handleOffer(offerText) {
       var offer;
-      try { offer = decodeDesc(text); }
-      catch (e) { setStatus("Code invalide. Vérifie le collage."); return; }
+      try { offer = decodeDesc(offerText); }
+      catch (e) { setStatus("Code invalide."); return; }
 
       pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
       pc.ontrack = function(ev) {
@@ -351,34 +456,63 @@
         setStatus("Connecté à la caméra.");
       };
       pc.onconnectionstatechange = function() {
-        if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) {
-          setLive(false);
-          setStatus("Connexion perdue.");
-        }
+        if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) { setLive(false); setStatus("Connexion perdue."); }
       };
 
       try {
         await pc.setRemoteDescription(offer);
         var answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        await waitIceComplete(pc, 4000);
+        await waitIceComplete(pc, 3000);
         var code = encodeDesc(pc.localDescription);
-        container.querySelector(".answer-box").value = code;
-        container.querySelector(".step2").style.display = "block";
-        setStatus("Envoie cette réponse à la caméra pour finaliser la connexion.");
+        renderQR(container.querySelector(".answer-qr"), code);
+        container.querySelector(".answer-text").value = code;
+        container.querySelector(".setup").style.display = "none";
+        container.querySelector(".view-area").style.display = "flex";
+        setStatus("Montre ce QR code à la caméra pour finaliser.");
       } catch (e) {
         setStatus("Erreur lors de la création de la réponse.");
       }
     }
 
+    async function scanInvitation() {
+      try {
+        var text = await scanQRCode("Cadre le QR code affiché sur la caméra.");
+        await handleOffer(text);
+      } catch (e) { /* annulé */ }
+    }
+
+    function disconnect() {
+      if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+      setLive(false);
+      container.querySelector(".setup").style.display = "flex";
+      container.querySelector(".view-area").style.display = "none";
+      setStatus("Scanne le QR code affiché sur la caméra.");
+    }
+
     container.appendChild(
       el("div", { class: "toolbar" }, [
-        el("button", { class: "iconbtn", onclick: function() { if (pc) pc.close(); render(ScreenHome()); } }, ["← Retour"]),
+        el("button", { class: "iconbtn", onclick: function() { disconnect(); render(ScreenHome()); } }, ["← Retour"]),
         el("div", { class: "pill" }, [ el("span", { class: "dot" }), el("span", { class: "conn-label" }, ["Non connecté"]) ])
       ])
     );
 
     container.appendChild(
+      el("div", { class: "screen center setup" }, [
+        el("div", { style: "font-size:40px;" }, ["👁️"]),
+        el("h1", {}, ["Écran de contrôle"]),
+        el("p", { class: "sub" }, ["Scanne le QR code affiché sur l'appareil qui fait office de caméra."]),
+        el("button", { class: "btn success", onclick: scanInvitation }, ["Scanner l'invitation"]),
+        el("details", { class: "manual" }, [
+          el("summary", {}, ["Coller le code manuellement à la place"]),
+          el("textarea", { class: "code-box offer-paste", placeholder: "Colle le code de la caméra ici…" }),
+          el("button", { class: "btn ghost small", style: "margin-top:8px;", onclick: function() { handleOffer(container.querySelector(".offer-paste").value); } }, ["Se connecter"])
+        ]),
+        el("div", { class: "status-text" }, [""])
+      ])
+    );
+
+    var viewArea = el("div", { class: "screen", style: "display:none;" }, [
       el("div", { class: "video-wrap" }, [
         el("video", { autoplay: "", playsinline: "" }),
         el("div", { class: "placeholder", style: "position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; color: var(--muted);" }, [
@@ -386,33 +520,22 @@
           el("div", {}, ["En attente de l'image de la caméra…"])
         ]),
         el("div", { class: "overlay-top" }, [ el("span", { class: "pill" }, ["👁️ En direct — non enregistré"]) ])
-      ])
-    );
-
-    container.appendChild(
+      ]),
       el("div", { class: "card" }, [
-        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["1"]), el("h3", {}, ["Coller l'invitation"]) ]),
-        el("p", { class: "hint" }, ["Colle ici le code reçu de la caméra."]),
-        el("textarea", { class: "code-box offer-input", placeholder: "Colle le code de la caméra ici…" }),
-        el("button", { class: "btn primary", style: "margin-top:10px;", onclick: acceptInvitation }, ["Se connecter"])
-      ])
-    );
-
-    container.appendChild(
-      el("div", { class: "card step2", style: "display:none;" }, [
-        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["2"]), el("h3", {}, ["Renvoyer la réponse"]) ]),
-        el("p", { class: "hint" }, ["Envoie ce code à la caméra pour terminer la connexion."]),
-        el("textarea", { class: "code-box answer-box", readonly: "true" }),
-        el("div", { class: "btn-row" }, [
-          el("button", { class: "btn ghost small", onclick: function() {
-            var t = container.querySelector(".answer-box").value;
-            if (t) shareOrCopy(t, "La réponse", setStatus);
-          } }, ["Partager la réponse"])
+        el("h3", {}, ["Montre ce QR code à la caméra"]),
+        el("div", { class: "qr-box answer-qr" }),
+        el("details", { class: "manual" }, [
+          el("summary", {}, ["Copier le code à la place"]),
+          el("textarea", { class: "code-box answer-text", readonly: "true" }),
+          el("button", { class: "btn ghost small", style: "margin-top:8px;", onclick: function() { copyText(container.querySelector(".answer-text").value, setStatus); } }, ["Copier le code"])
         ])
+      ]),
+      el("div", { class: "screen center", style: "flex:0; padding-top: 10px;" }, [
+        el("button", { class: "btn ghost", onclick: disconnect }, ["Se déconnecter"])
       ])
-    );
-
-    container.appendChild(el("div", { class: "status-text" }, [""]));
+    ]);
+    viewArea.classList.add("view-area");
+    container.appendChild(viewArea);
 
     return container;
   }
