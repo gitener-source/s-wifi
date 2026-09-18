@@ -283,6 +283,7 @@
 
   function ScreenCamera() {
     var peer = null, stream = null, activeCall = null, facing = "environment", switching = false, wakeLock = null;
+    var reconnectTimer = null, stopped = true;
     var container = el("div", { class: "screen" });
     function status(t) { var n = container.querySelector(".status-text"); if (n) n.textContent = t; }
     function live(on) {
@@ -291,12 +292,27 @@
       if (l) l.textContent = on ? "En direct" : (peer ? "Prête" : "Arrêtée");
     }
     function cleanup() {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
       if (activeCall) try { activeCall.close(); } catch (e) {}
       if (peer) try { peer.destroy(); } catch (e) {}
       if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
       if (wakeLock) try { wakeLock.release(); } catch (e) {}
       wakeLock = null;
       activeCall = peer = stream = null;
+    }
+    function reconnectCameraPeer() {
+      if (stopped || !peer || peer.destroyed || reconnectTimer) return;
+      status("Liaison interrompue. Reconnexion automatique…");
+      reconnectTimer = setTimeout(function attempt() {
+        reconnectTimer = null;
+        if (stopped || !peer || peer.destroyed) return;
+        try { peer.reconnect(); } catch (e) {}
+        if (peer.disconnected) {
+          reconnectTimer = setTimeout(attempt, 3000);
+        }
+      }, 2000);
     }
     async function keepAwake() {
       if (!navigator.wakeLock || wakeLock) return;
@@ -378,6 +394,7 @@
       savePassword(password);
       if (typeof Peer === "undefined") { status("Le service de connexion n'a pas pu charger. Vérifie Internet."); return; }
       cleanup();
+      stopped = false;
       status("Ouverture de la caméra…");
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
@@ -389,22 +406,39 @@
       catch (e) { status("Ce navigateur ne permet pas de sécuriser le mot de passe."); cleanup(); return; }
       status("Connexion au service…");
       peer = new Peer(id);
-      peer.on("open", function() { live(false); status("Caméra prête. Entre le même mot de passe sur l'écran de contrôle."); container.querySelector(".start-btn").textContent = "Redémarrer la caméra"; });
+      peer.on("open", function() {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+        live(!!activeCall);
+        status(activeCall ? "Liaison rétablie automatiquement." : "Caméra prête. Entre le même mot de passe sur l'écran de contrôle.");
+        container.querySelector(".start-btn").textContent = "Redémarrer la caméra";
+      });
       peer.on("connection", function(conn) {
         conn.on("open", function() {
           conn.on("data", function(data) {
+            if (data === "ping") { try { conn.send("pong"); } catch (e) {} return; }
             if (data === "switch-camera") { switchCamera(); return; }
             if (data !== "watch" || !stream) return;
             if (activeCall) try { activeCall.close(); } catch (e) {}
-            activeCall = peer.call(conn.peer, stream);
-            activeCall.on("close", function() { live(false); status("Écran de contrôle déconnecté. La caméra reste prête."); });
-            activeCall.on("error", function() { live(false); status("La liaison vidéo a été interrompue."); });
+            var newCall = peer.call(conn.peer, stream);
+            activeCall = newCall;
+            newCall.on("close", function() {
+              if (activeCall !== newCall) return;
+              activeCall = null; live(false); status("Image interrompue. En attente de la reconnexion automatique…");
+            });
+            newCall.on("error", function() {
+              if (activeCall !== newCall) return;
+              activeCall = null; live(false); status("Liaison vidéo interrompue. Reconnexion en attente…");
+            });
             live(true); status("Image envoyée à l'écran de contrôle.");
           });
         });
       });
-      peer.on("error", function(err) { live(false); status(peerMessage(err)); });
-      peer.on("disconnected", function() { live(false); status("Connexion interrompue. Vérifie Internet."); });
+      peer.on("error", function(err) {
+        live(false); status(peerMessage(err));
+        if (err && ["network", "server-error", "socket-error", "socket-closed"].indexOf(err.type) !== -1) reconnectCameraPeer();
+      });
+      peer.on("disconnected", reconnectCameraPeer);
     }
 
     container.appendChild(el("div", { class: "toolbar" }, [
@@ -438,6 +472,8 @@
 
   function ScreenViewer() {
     var peer = null, conn = null, call = null;
+    var heartbeatTimer = null, retryTimer = null, mediaRetryTimer = null;
+    var stopped = true, generation = 0, lastPong = 0;
     var container = el("div", { class: "screen" });
     function status(t) { container.querySelectorAll(".status-text").forEach(function(n) { n.textContent = t; }); }
     function live(on) {
@@ -447,6 +483,12 @@
       if (ph) ph.style.display = on ? "none" : "flex";
     }
     function cleanup(showSetup) {
+      stopped = true;
+      generation++;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      if (mediaRetryTimer) clearTimeout(mediaRetryTimer);
+      heartbeatTimer = retryTimer = mediaRetryTimer = null;
       if (call) try { call.close(); } catch (e) {}
       if (conn) try { conn.close(); } catch (e) {}
       if (peer) try { peer.destroy(); } catch (e) {}
@@ -456,6 +498,42 @@
       if (area) area.classList.remove("forced-landscape");
       document.documentElement.style.overflow = "";
       if (showSetup) { container.querySelector(".setup").style.display = "flex"; container.querySelector(".view-area").style.display = "none"; }
+    }
+    function scheduleReconnect(message, gen) {
+      if (stopped || gen !== generation || retryTimer) return;
+      live(false);
+      status((message || "Connexion interrompue.") + " Nouvelle tentative dans 3 secondes…");
+      retryTimer = setTimeout(function() {
+        retryTimer = null;
+        if (!stopped && gen === generation) beginConnection(true);
+      }, 3000);
+    }
+    function startHeartbeat(gen) {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      lastPong = Date.now();
+      heartbeatTimer = setInterval(function() {
+        if (stopped || gen !== generation) return;
+        if (!conn || !conn.open || Date.now() - lastPong > 25000) {
+          scheduleReconnect("La liaison ne répond plus.", gen);
+          return;
+        }
+        try { conn.send("ping"); }
+        catch (e) { scheduleReconnect("Le signal de maintien a été interrompu.", gen); }
+      }, 8000);
+    }
+    function requestVideoAgain(gen) {
+      if (stopped || gen !== generation || mediaRetryTimer) return;
+      mediaRetryTimer = setTimeout(function() {
+        mediaRetryTimer = null;
+        if (stopped || gen !== generation) return;
+        if (conn && conn.open) {
+          status("Reprise automatique de la vidéo…");
+          try { conn.send("watch"); }
+          catch (e) { scheduleReconnect("La reprise vidéo a échoué.", gen); }
+        } else {
+          scheduleReconnect("La caméra ne répond plus.", gen);
+        }
+      }, 2000);
     }
     function remoteSwitchCamera() {
       if (!conn || !conn.open) { status("La caméra n'est pas encore connectée."); return; }
@@ -470,36 +548,79 @@
       if (button) button.textContent = active ? "✕ Quitter" : "⛶ Paysage";
       status(active ? "Mode paysage activé." : "Mode paysage quitté.");
     }
-    async function connect() {
+    async function beginConnection(isRetry) {
       var password = container.querySelector(".viewer-password").value;
       if (password.length < 8) { status("Le mot de passe doit contenir au moins 8 caractères."); return; }
       savePassword(password);
       if (typeof Peer === "undefined") { status("Le service de connexion n'a pas pu charger. Vérifie Internet."); return; }
-      cleanup(false); status("Recherche de la caméra…");
+      var gen = ++generation;
+      stopped = false;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      if (retryTimer) clearTimeout(retryTimer);
+      if (mediaRetryTimer) clearTimeout(mediaRetryTimer);
+      heartbeatTimer = retryTimer = mediaRetryTimer = null;
+      if (call) try { call.close(); } catch (e) {}
+      if (conn) try { conn.close(); } catch (e) {}
+      if (peer) try { peer.destroy(); } catch (e) {}
+      call = conn = peer = null;
+      live(false);
+      var currentVideo = container.querySelector("video");
+      if (currentVideo) currentVideo.srcObject = null;
+      status(isRetry ? "Reconnexion automatique à la caméra…" : "Recherche de la caméra…");
       var id;
       try { id = await cameraId(password); }
       catch (e) { status("Ce navigateur ne permet pas de sécuriser le mot de passe."); return; }
+      if (stopped || gen !== generation) return;
       peer = new Peer();
       peer.on("open", function() {
+        if (stopped || gen !== generation) return;
         conn = peer.connect(id, { reliable: true });
-        conn.on("open", function() { status("Caméra trouvée. Ouverture de l'image…"); conn.send("watch"); });
-        conn.on("error", function(err) { status(peerMessage(err)); });
-        conn.on("close", function() { live(false); status("Caméra déconnectée."); });
+        conn.on("open", function() {
+          if (stopped || gen !== generation) return;
+          status(isRetry ? "Caméra retrouvée. Reprise de l'image…" : "Caméra trouvée. Ouverture de l'image…");
+          startHeartbeat(gen);
+          try { conn.send("watch"); }
+          catch (e) { scheduleReconnect("Impossible de demander l'image.", gen); }
+        });
+        conn.on("data", function(data) { if (data === "pong") lastPong = Date.now(); });
+        conn.on("error", function() { scheduleReconnect("Erreur de liaison avec la caméra.", gen); });
+        conn.on("close", function() { scheduleReconnect("Caméra déconnectée.", gen); });
       });
       peer.on("call", function(incoming) {
-        call = incoming; call.answer();
-        call.on("stream", function(remoteStream) {
+        if (stopped || gen !== generation) { try { incoming.close(); } catch (e) {} return; }
+        var oldCall = call;
+        call = incoming;
+        if (oldCall && oldCall !== incoming) try { oldCall.close(); } catch (e) {}
+        incoming.answer();
+        incoming.on("stream", function(remoteStream) {
+          if (stopped || gen !== generation || call !== incoming) return;
           var v = container.querySelector("video");
           v.srcObject = remoteStream; v.muted = false;
           container.querySelector(".setup").style.display = "none";
           container.querySelector(".view-area").style.display = "flex";
           v.play().catch(function() { status("Touche l'écran pour lancer la vidéo avec le son."); });
-          live(true); status("Connecté à la caméra.");
+          live(true); status(isRetry ? "Vidéo reprise automatiquement." : "Connecté à la caméra.");
         });
-        call.on("close", function() { live(false); status("La caméra a arrêté la diffusion."); });
-        call.on("error", function() { live(false); status("La liaison vidéo a été interrompue."); });
+        incoming.on("close", function() {
+          if (call !== incoming || stopped || gen !== generation) return;
+          call = null; live(false); status("Vidéo interrompue. Reprise automatique…"); requestVideoAgain(gen);
+        });
+        incoming.on("error", function() {
+          if (call !== incoming || stopped || gen !== generation) return;
+          call = null; live(false); status("Erreur vidéo. Nouvelle tentative…"); requestVideoAgain(gen);
+        });
       });
-      peer.on("error", function(err) { live(false); status(peerMessage(err)); });
+      peer.on("error", function(err) {
+        if (stopped || gen !== generation) return;
+        scheduleReconnect(peerMessage(err), gen);
+      });
+      peer.on("disconnected", function() {
+        if (stopped || gen !== generation) return;
+        scheduleReconnect("Service de liaison déconnecté.", gen);
+      });
+    }
+    function connect() {
+      beginConnection(false);
     }
 
     container.appendChild(el("div", { class: "toolbar" }, [
