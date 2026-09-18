@@ -191,6 +191,10 @@
     padding: 8px; cursor: pointer;
   }
   .security-note { color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 10px; }
+  .forget-button {
+    margin-top: 10px; border: 0; background: transparent; color: var(--muted);
+    font-size: 12.5px; text-decoration: underline; cursor: pointer; padding: 6px;
+  }
 
 </style>
 </head>
@@ -216,10 +220,26 @@
   }
 
   var app = document.getElementById("app");
+  var PASSWORD_STORAGE_KEY = "surveillance-wifi-password-v1";
   function render(node) { app.innerHTML = ""; app.appendChild(node); }
+
+  function loadSavedPassword() {
+    try { return localStorage.getItem(PASSWORD_STORAGE_KEY) || ""; }
+    catch (e) { return ""; }
+  }
+  function savePassword(password) {
+    try { localStorage.setItem(PASSWORD_STORAGE_KEY, password); }
+    catch (e) {}
+  }
+  function forgetPassword(input, statusFn) {
+    try { localStorage.removeItem(PASSWORD_STORAGE_KEY); } catch (e) {}
+    if (input) input.value = "";
+    if (statusFn) statusFn("Mot de passe oublié sur ce téléphone.");
+  }
 
   function passwordField(className) {
     var input = el("input", { class: "password-box " + className, type: "password", placeholder: "Votre mot de passe", autocomplete: "off", autocapitalize: "none" });
+    input.value = loadSavedPassword();
     var show = el("button", { class: "show-password", type: "button", "aria-label": "Afficher le mot de passe", onclick: function() {
       var visible = input.type === "text";
       input.type = visible ? "password" : "text";
@@ -335,6 +355,7 @@
     async function start() {
       var password = container.querySelector(".camera-password").value;
       if (password.length < 8) { status("Choisis un mot de passe d'au moins 8 caractères."); return; }
+      savePassword(password);
       if (typeof Peer === "undefined") { status("Le service de connexion n'a pas pu charger. Vérifie Internet."); return; }
       cleanup();
       status("Ouverture de la caméra…");
@@ -385,7 +406,8 @@
       el("p", { class: "hint" }, ["Choisis un mot de passe puis utilise exactement le même sur l'autre téléphone."]),
       passwordField("camera-password"),
       el("button", { class: "btn primary start-btn", onclick: start }, ["Démarrer la caméra"]),
-      el("div", { class: "security-note" }, ["Utilise au moins 8 caractères difficiles à deviner. Le mot de passe n'est pas envoyé tel quel."])
+      el("div", { class: "security-note" }, ["Le mot de passe sera mémorisé sur ce téléphone après le démarrage."]),
+      el("button", { class: "forget-button", type: "button", onclick: function() { forgetPassword(container.querySelector(".camera-password"), status); } }, ["Oublier le mot de passe"])
     ]));
     container.appendChild(el("div", { class: "status-text" }, [""]));
     container.appendChild(el("div", { class: "blackout-overlay", role: "button", tabindex: "0", onclick: showLocalScreen }, [
@@ -431,6 +453,7 @@
     async function connect() {
       var password = container.querySelector(".viewer-password").value;
       if (password.length < 8) { status("Le mot de passe doit contenir au moins 8 caractères."); return; }
+      savePassword(password);
       if (typeof Peer === "undefined") { status("Le service de connexion n'a pas pu charger. Vérifie Internet."); return; }
       cleanup(false); status("Recherche de la caméra…");
       var id;
@@ -469,7 +492,9 @@
       el("p", { class: "sub" }, ["Entre le mot de passe choisi sur le téléphone caméra."]),
       el("div", { class: "card", style: "margin-top:0;" }, [
         el("h3", {}, ["Mot de passe de la caméra"]), passwordField("viewer-password"),
-        el("button", { class: "btn success", onclick: connect }, ["Voir la caméra"])
+        el("button", { class: "btn success", onclick: connect }, ["Voir la caméra"]),
+        el("div", { class: "security-note" }, ["Le mot de passe sera mémorisé sur ce téléphone après la connexion."]),
+        el("button", { class: "forget-button", type: "button", onclick: function() { forgetPassword(container.querySelector(".viewer-password"), status); } }, ["Oublier le mot de passe"])
       ]),
       el("div", { class: "status-text" }, [""])
     ]));
