@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Surveillance WiFi</title>
+<style>
+  :root {
+    --bg: #0b0e13; --panel: #131822; --panel-2: #1a2130; --text: #eef1f6;
+    --muted: #8b93a3; --accent: #ff4d4d; --accent-2: #2fd66a; --border: #232b3a;
+    --btn: #232b3a; --btn-text: #eef1f6;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f2f3f6; --panel: #ffffff; --panel-2: #eceff4; --text: #12141a;
+      --muted: #5b6272; --border: #dfe3ec; --btn: #e6e9f0; --btn-text: #12141a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0e13; --panel: #131822; --panel-2: #1a2130; --text: #eef1f6;
+    --muted: #8b93a3; --border: #232b3a; --btn: #232b3a; --btn-text: #eef1f6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  #app {
+    min-height: 100vh; min-height: 100dvh;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top, 16px) env(safe-area-inset-right, 16px) env(safe-area-inset-bottom, 16px) env(safe-area-inset-left, 16px);
+  }
+  .screen { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
+  .center { align-items: center; justify-content: center; text-align: center; }
+  header.top, .toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 4px 18px 4px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink:0; }
+  .dot.live { background: var(--accent); animation: pulse 1.6s infinite; }
+  .dot.ok { background: var(--accent-2); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255,77,77,0.55); }
+    70% { box-shadow: 0 0 0 10px rgba(255,77,77,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,77,77,0); }
+  }
+  h1 { font-size: 22px; margin: 0 0 6px 0; }
+  p.sub { color: var(--muted); font-size: 14.5px; margin: 0 0 24px 0; max-width: 380px; }
+  .choice-grid { display: grid; gap: 14px; width: 100%; max-width: 420px; }
+  .choice {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 18px;
+    padding: 22px 18px; text-align: left; cursor: pointer;
+    display: flex; align-items: center; gap: 16px; color: var(--text);
+  }
+  .choice:active { background: var(--panel-2); }
+  .choice .emoji { font-size: 30px; line-height: 1; }
+  .choice .label { font-weight: 700; font-size: 16.5px; margin-bottom: 3px; }
+  .choice .desc { color: var(--muted); font-size: 13px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--btn); color: var(--btn-text); border: none; border-radius: 14px;
+    padding: 15px 22px; font-size: 16px; font-weight: 600; cursor: pointer;
+    width: 100%; max-width: 380px;
+  }
+  .btn:active { opacity: 0.8; }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.success { background: var(--accent-2); color: #06210f; }
+  .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn.small { padding: 10px 16px; font-size: 14px; width: auto; }
+  .btn[disabled] { opacity: 0.45; pointer-events: none; }
+  .video-wrap {
+    position: relative; border-radius: 18px; overflow: hidden; background: #000;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 32vh; border: 1px solid var(--border); flex-shrink: 0;
+  }
+  video { width: 100%; height: 100%; object-fit: cover; background: #000; }
+  .overlay-top {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; background: linear-gradient(to bottom, rgba(0,0,0,0.55), transparent);
+  }
+  .pill {
+    background: rgba(0,0,0,0.45); color: #fff; padding: 6px 11px; border-radius: 999px;
+    font-size: 12.5px; display: flex; align-items: center; gap: 6px;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
+    padding: 16px; margin-top: 14px; width: 100%; max-width: 460px;
+  }
+  .card h3 { margin: 0 0 8px 0; font-size: 14.5px; }
+  .card p.hint { color: var(--muted); font-size: 12.5px; margin: 4px 0 10px 0; }
+  textarea.code-box {
+    width: 100%; min-height: 78px; resize: vertical;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11.5px; word-break: break-all;
+  }
+  .btn-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .status-text { color: var(--muted); font-size: 13.5px; margin-top: 12px; min-height: 18px; text-align: center; }
+  .iconbtn {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    border-radius: 12px; padding: 9px 13px; font-size: 14px; cursor: pointer;
+  }
+  .placeholder-icon { font-size: 44px; opacity: 0.35; }
+  .step-num {
+    display: inline-flex; align-items:center; justify-content:center;
+    width: 20px; height: 20px; border-radius: 50%; background: var(--accent);
+    color: #fff; font-size: 12px; font-weight: 700; margin-right: 8px; flex-shrink:0;
+  }
+  .step-title { display:flex; align-items:center; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+(function() {
+  "use strict";
+
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    attrs = attrs || {};
+    for (var k in attrs) {
+      if (k === "class") e.className = attrs[k];
+      else if (k === "html") e.innerHTML = attrs[k];
+      else if (k.indexOf("on") === 0 && typeof attrs[k] === "function") e.addEventListener(k.slice(2), attrs[k]);
+      else e.setAttribute(k, attrs[k]);
+    }
+    (children || []).forEach(function(c) {
+      if (c == null) return;
+      if (typeof c === "string") e.appendChild(document.createTextNode(c));
+      else e.appendChild(c);
+    });
+    return e;
+  }
+
+  var app = document.getElementById("app");
+  function render(node) { app.innerHTML = ""; app.appendChild(node); }
+
+  var ICE_SERVERS = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:global.stun.twilio.com:3478" }
+  ];
+
+  function encodeDesc(desc) {
+    return btoa(unescape(encodeURIComponent(JSON.stringify({ type: desc.type, sdp: desc.sdp }))));
+  }
+  function decodeDesc(text) {
+    return JSON.parse(decodeURIComponent(escape(atob(text.trim()))));
+  }
+
+  function waitIceComplete(pc, timeoutMs) {
+    return new Promise(function(resolve) {
+      if (pc.iceGatheringState === "complete") return resolve();
+      var done = false;
+      function check() {
+        if (pc.iceGatheringState === "complete" && !done) {
+          done = true;
+          pc.removeEventListener("icegatheringstatechange", check);
+          resolve();
+        }
+      }
+      pc.addEventListener("icegatheringstatechange", check);
+      setTimeout(function() {
+        if (!done) { done = true; pc.removeEventListener("icegatheringstatechange", check); resolve(); }
+      }, timeoutMs || 4000);
+    });
+  }
+
+  async function shareOrCopy(text, label, statusFn) {
+    if (navigator.share) {
+      try {
+        await navigator.share({ text: text });
+        return;
+      } catch (e) { /* user cancelled or unsupported, fall through to copy */ }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      statusFn && statusFn(label + " copié — colle-le dans Messages ou AirDrop.");
+    } catch (e) {
+      statusFn && statusFn("Sélectionne le texte ci-dessus et copie-le manuellement.");
+    }
+  }
+
+  // ================= ACCUEIL =================
+  function ScreenHome() {
+    return el("div", { class: "screen center" }, [
+      el("div", { style: "font-size:40px;" }, ["📡"]),
+      el("h1", {}, ["Surveillance WiFi"]),
+      el("p", { class: "sub" }, ["Diffusion vidéo directe entre deux iPhone, sans serveur ni enregistrement. Fonctionne partout où cette page est hébergée."]),
+      el("div", { class: "choice-grid" }, [
+        el("div", { class: "choice", onclick: function() { render(ScreenCamera()); } }, [
+          el("div", { class: "emoji" }, ["📷"]),
+          el("div", {}, [
+            el("div", { class: "label" }, ["Caméra de surveillance"]),
+            el("div", { class: "desc" }, ["Ce téléphone filme le lieu et diffuse l'image en direct."])
+          ])
+        ]),
+        el("div", { class: "choice", onclick: function() { render(ScreenViewer()); } }, [
+          el("div", { class: "emoji" }, ["👁️"]),
+          el("div", {}, [
+            el("div", { class: "label" }, ["Écran de contrôle"]),
+            el("div", { class: "desc" }, ["Ce téléphone affiche l'image en direct."])
+          ])
+        ])
+      ])
+    ]);
+  }
+
+  // ================= CAMÉRA =================
+  function ScreenCamera() {
+    var pc = null, stream = null;
+    var container = el("div", { class: "screen" });
+
+    function setStatus(t) {
+      var s = container.querySelector(".status-text");
+      if (s) s.textContent = t;
+    }
+    function setLive(v) {
+      var dot = container.querySelector(".dot");
+      if (dot) dot.className = "dot" + (v ? " live" : "");
+      var label = container.querySelector(".conn-label");
+      if (label) label.textContent = v ? "En direct" : "Non connecté";
+    }
+
+    async function init() {
+      setStatus("Ouverture de la caméra…");
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: true
+        });
+      } catch (e) {
+        setStatus("Impossible d'accéder à la caméra : vérifie les autorisations dans Réglages > Safari.");
+        return;
+      }
+      var v = container.querySelector("video");
+      if (v) v.srcObject = stream;
+    }
+
+    async function createInvitation() {
+      if (pc) { try { pc.close(); } catch (e) {} }
+      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      stream.getTracks().forEach(function(t) { pc.addTrack(t, stream); });
+      pc.onconnectionstatechange = function() {
+        if (pc.connectionState === "connected") { setLive(true); setStatus("Connexion établie."); }
+        if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) { setLive(false); }
+      };
+      setStatus("Génération du code d'invitation…");
+      var offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitIceComplete(pc, 4000);
+      var code = encodeDesc(pc.localDescription);
+      container.querySelector(".offer-box").value = code;
+      container.querySelector(".step2").style.display = "block";
+      setStatus("Envoie ce code à l'écran de contrôle, puis colle sa réponse ci-dessous.");
+    }
+
+    async function acceptAnswer() {
+      var text = container.querySelector(".answer-input").value;
+      if (!text || !text.trim()) { setStatus("Colle d'abord la réponse reçue de l'écran de contrôle."); return; }
+      try {
+        var desc = decodeDesc(text);
+        await pc.setRemoteDescription(desc);
+        setStatus("Connexion en cours…");
+      } catch (e) {
+        setStatus("Code de réponse invalide. Vérifie le collage.");
+      }
+    }
+
+    container.appendChild(
+      el("div", { class: "toolbar" }, [
+        el("button", { class: "iconbtn", onclick: function() { if (stream) stream.getTracks().forEach(function(t){t.stop();}); if (pc) pc.close(); render(ScreenHome()); } }, ["← Retour"]),
+        el("div", { class: "pill" }, [ el("span", { class: "dot" }), el("span", { class: "conn-label" }, ["Non connecté"]) ])
+      ])
+    );
+
+    container.appendChild(
+      el("div", { class: "video-wrap" }, [
+        el("video", { autoplay: "", playsinline: "", muted: "true" }),
+        el("div", { class: "overlay-top" }, [ el("span", { class: "pill" }, ["📷 Mode caméra"]) ])
+      ])
+    );
+
+    container.appendChild(
+      el("div", { class: "card" }, [
+        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["1"]), el("h3", {}, ["Créer une invitation"]) ]),
+        el("p", { class: "hint" }, ["Génère un code, puis envoie-le à l'écran de contrôle (AirDrop, Messages…)."]),
+        el("button", { class: "btn primary", onclick: createInvitation }, ["Créer une invitation"]),
+        el("textarea", { class: "code-box offer-box", readonly: "true", placeholder: "Le code apparaîtra ici…" }),
+        el("div", { class: "btn-row" }, [
+          el("button", { class: "btn ghost small", onclick: function() {
+            var t = container.querySelector(".offer-box").value;
+            if (t) shareOrCopy(t, "Le code", setStatus);
+          } }, ["Partager le code"])
+        ])
+      ])
+    );
+
+    container.appendChild(
+      el("div", { class: "card step2", style: "display:none;" }, [
+        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["2"]), el("h3", {}, ["Coller la réponse"]) ]),
+        el("p", { class: "hint" }, ["Colle ici le code que l'écran de contrôle t'a envoyé en retour."]),
+        el("textarea", { class: "code-box answer-input", placeholder: "Colle la réponse ici…" }),
+        el("button", { class: "btn success", style: "margin-top:10px;", onclick: acceptAnswer }, ["Connecter"])
+      ])
+    );
+
+    container.appendChild(el("div", { class: "status-text" }, [""]));
+
+    init();
+    return container;
+  }
+
+  // ================= ÉCRAN DE CONTRÔLE =================
+  function ScreenViewer() {
+    var pc = null;
+    var container = el("div", { class: "screen" });
+
+    function setStatus(t) {
+      var s = container.querySelector(".status-text");
+      if (s) s.textContent = t;
+    }
+    function setLive(v) {
+      var dot = container.querySelector(".dot");
+      if (dot) dot.className = "dot" + (v ? " ok" : "");
+      var label = container.querySelector(".conn-label");
+      if (label) label.textContent = v ? "En direct" : "Non connecté";
+      var ph = container.querySelector(".placeholder");
+      if (ph) ph.style.display = v ? "none" : "flex";
+    }
+
+    async function acceptInvitation() {
+      var text = container.querySelector(".offer-input").value;
+      if (!text || !text.trim()) { setStatus("Colle d'abord le code reçu de la caméra."); return; }
+      var offer;
+      try { offer = decodeDesc(text); }
+      catch (e) { setStatus("Code invalide. Vérifie le collage."); return; }
+
+      pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      pc.ontrack = function(ev) {
+        var v = container.querySelector("video");
+        if (v) { v.srcObject = ev.streams[0]; v.muted = false; }
+        setLive(true);
+        setStatus("Connecté à la caméra.");
+      };
+      pc.onconnectionstatechange = function() {
+        if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) {
+          setLive(false);
+          setStatus("Connexion perdue.");
+        }
+      };
+
+      try {
+        await pc.setRemoteDescription(offer);
+        var answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await waitIceComplete(pc, 4000);
+        var code = encodeDesc(pc.localDescription);
+        container.querySelector(".answer-box").value = code;
+        container.querySelector(".step2").style.display = "block";
+        setStatus("Envoie cette réponse à la caméra pour finaliser la connexion.");
+      } catch (e) {
+        setStatus("Erreur lors de la création de la réponse.");
+      }
+    }
+
+    container.appendChild(
+      el("div", { class: "toolbar" }, [
+        el("button", { class: "iconbtn", onclick: function() { if (pc) pc.close(); render(ScreenHome()); } }, ["← Retour"]),
+        el("div", { class: "pill" }, [ el("span", { class: "dot" }), el("span", { class: "conn-label" }, ["Non connecté"]) ])
+      ])
+    );
+
+    container.appendChild(
+      el("div", { class: "video-wrap" }, [
+        el("video", { autoplay: "", playsinline: "" }),
+        el("div", { class: "placeholder", style: "position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; color: var(--muted);" }, [
+          el("div", { class: "placeholder-icon" }, ["📡"]),
+          el("div", {}, ["En attente de l'image de la caméra…"])
+        ]),
+        el("div", { class: "overlay-top" }, [ el("span", { class: "pill" }, ["👁️ En direct — non enregistré"]) ])
+      ])
+    );
+
+    container.appendChild(
+      el("div", { class: "card" }, [
+        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["1"]), el("h3", {}, ["Coller l'invitation"]) ]),
+        el("p", { class: "hint" }, ["Colle ici le code reçu de la caméra."]),
+        el("textarea", { class: "code-box offer-input", placeholder: "Colle le code de la caméra ici…" }),
+        el("button", { class: "btn primary", style: "margin-top:10px;", onclick: acceptInvitation }, ["Se connecter"])
+      ])
+    );
+
+    container.appendChild(
+      el("div", { class: "card step2", style: "display:none;" }, [
+        el("div", { class: "step-title" }, [ el("span", { class: "step-num" }, ["2"]), el("h3", {}, ["Renvoyer la réponse"]) ]),
+        el("p", { class: "hint" }, ["Envoie ce code à la caméra pour terminer la connexion."]),
+        el("textarea", { class: "code-box answer-box", readonly: "true" }),
+        el("div", { class: "btn-row" }, [
+          el("button", { class: "btn ghost small", onclick: function() {
+            var t = container.querySelector(".answer-box").value;
+            if (t) shareOrCopy(t, "La réponse", setStatus);
+          } }, ["Partager la réponse"])
+        ])
+      ])
+    );
+
+    container.appendChild(el("div", { class: "status-text" }, [""]));
+
+    return container;
+  }
+
+  render(ScreenHome());
+})();
+</script>
+</body>
+</html>
