@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -10,6 +9,7 @@
 <title>Surveillance WiFi</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 <style>
   :root {
     --bg: #0b0e13; --panel: #131822; --panel-2: #1a2130; --text: #eef1f6;
@@ -181,10 +181,56 @@
   var ICE_SERVERS = [];
 
   function encodeDesc(desc) {
-    return btoa(unescape(encodeURIComponent(JSON.stringify({ type: desc.type, sdp: desc.sdp }))));
+    var json = JSON.stringify({ type: desc.type, sdp: trimSdp(desc.sdp) });
+    if (typeof pako === "undefined") {
+      return btoa(unescape(encodeURIComponent(json)));
+    }
+    var bytes = new TextEncoder().encode(json);
+    var compressed = pako.deflate(bytes);
+    var binary = "";
+    for (var i = 0; i < compressed.length; i++) binary += String.fromCharCode(compressed[i]);
+    return "1" + btoa(binary); // "1" prefix marks compressed payloads
   }
   function decodeDesc(text) {
-    return JSON.parse(decodeURIComponent(escape(atob(text.trim()))));
+    text = text.trim();
+    if (text.charAt(0) === "1" && typeof pako !== "undefined") {
+      var binary = atob(text.slice(1));
+      var bytes = new Uint8Array(binary.length);
+      for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      var json = new TextDecoder().decode(pako.inflate(bytes));
+      return JSON.parse(json);
+    }
+    return JSON.parse(decodeURIComponent(escape(atob(text))));
+  }
+
+  // Drops codec/candidate lines we don't need, to keep the QR code small.
+  // Keeps only IPv4 host candidates (same-WiFi pairing needs nothing else)
+  // and lets limitCodecsFor() (applied before offer/answer creation) do
+  // the heavy lifting on codec lists.
+  function trimSdp(sdp) {
+    var lines = sdp.split("\r\n");
+    var isIPv6HostCandidate = function(l) {
+      if (l.indexOf("a=candidate") !== 0 || l.indexOf("typ host") === -1) return false;
+      var parts = l.split(" ");
+      var address = parts[4] || "";
+      return address.indexOf(":") !== -1; // IPv6 addresses contain colons, IPv4 ones don't
+    };
+    var hasIPv4Host = lines.some(function(l) {
+      return l.indexOf("a=candidate") === 0 && l.indexOf(" host ") !== -1 && !isIPv6HostCandidate(l);
+    });
+    if (!hasIPv4Host) return sdp; // keep everything if no IPv4 host candidate is available
+    return lines.filter(function(l) { return !isIPv6HostCandidate(l); }).join("\r\n");
+  }
+
+  function limitCodecsFor(transceiver, kind) {
+    try {
+      var caps = RTCRtpSender.getCapabilities(kind);
+      if (!caps || !caps.codecs || !caps.codecs.length) return;
+      var preferred = caps.codecs.filter(function(c) {
+        return kind === "video" ? /VP8|H264/i.test(c.mimeType) : /opus/i.test(c.mimeType);
+      });
+      if (preferred.length) transceiver.setCodecPreferences(preferred);
+    } catch (e) { /* not supported: safe to ignore, just a bigger QR code */ }
   }
 
   function waitIceComplete(pc, timeoutMs) {
@@ -333,8 +379,12 @@
     async function createInvitation() {
       cleanup();
       pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-      videoSender = pc.addTransceiver("video", { direction: "sendonly" }).sender;
-      audioSender = pc.addTransceiver("audio", { direction: "sendonly" }).sender;
+      var videoTransceiver = pc.addTransceiver("video", { direction: "sendonly" });
+      var audioTransceiver = pc.addTransceiver("audio", { direction: "sendonly" });
+      limitCodecsFor(videoTransceiver, "video");
+      limitCodecsFor(audioTransceiver, "audio");
+      videoSender = videoTransceiver.sender;
+      audioSender = audioTransceiver.sender;
       pc.onconnectionstatechange = function() {
         if (pc.connectionState === "connected") { setLive(true); setStatus("Connexion établie."); }
         if (["failed","disconnected","closed"].indexOf(pc.connectionState) !== -1) setLive(false);
@@ -461,6 +511,10 @@
 
       try {
         await pc.setRemoteDescription(offer);
+        pc.getTransceivers().forEach(function(t) {
+          var kind = (t.receiver && t.receiver.track && t.receiver.track.kind) || null;
+          if (kind) limitCodecsFor(t, kind);
+        });
         var answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         await waitIceComplete(pc, 3000);
