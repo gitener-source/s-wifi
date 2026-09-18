@@ -81,7 +81,11 @@
     min-height: 30vh; border: 1px solid var(--border); flex-shrink: 0;
   }
   .camera-video { min-height: 55vh; min-height: 55dvh; }
-  .viewer-video { min-height: calc(100vh - 145px); min-height: calc(100dvh - 145px); }
+  .viewer-video {
+    width: 100%; aspect-ratio: 16 / 9; min-height: 0;
+    max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px);
+  }
+  .viewer-video video { object-fit: contain; }
   video { width: 100%; height: 100%; object-fit: cover; background: #000; }
   .overlay-top {
     position: absolute; top: 0; left: 0; right: 0;
@@ -98,6 +102,31 @@
     font-size: 21px; cursor: pointer;
   }
   .switch-camera:active { transform: scale(0.96); }
+  .remote-controls { display: flex; align-items: center; gap: 8px; }
+  .landscape-button {
+    background: rgba(0,0,0,0.58); color: #fff; border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 999px; min-height: 44px; padding: 8px 13px;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+  }
+  .landscape-button:active { transform: scale(0.96); }
+  .blackout-overlay {
+    display: none; position: fixed; inset: 0; z-index: 3000;
+    background: #000; color: rgba(255,255,255,0.38);
+    align-items: flex-end; justify-content: center; text-align: center;
+    padding: 0 20px calc(28px + env(safe-area-inset-bottom, 0px));
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+  }
+  .blackout-overlay.active { display: flex; }
+  .blackout-restore {
+    border: 1px solid rgba(255,255,255,0.16); border-radius: 999px;
+    padding: 10px 16px; font-size: 13px;
+  }
+  .view-area:fullscreen, .view-area:-webkit-full-screen { background: #000; padding: 0; }
+  .view-area:fullscreen .viewer-video, .view-area:-webkit-full-screen .viewer-video {
+    width: 100vw; height: 100vh; max-height: none; border: 0; border-radius: 0;
+  }
+  .view-area:fullscreen > .status-text, .view-area:fullscreen > .btn,
+  .view-area:-webkit-full-screen > .status-text, .view-area:-webkit-full-screen > .btn { display: none; }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
     padding: 16px; margin-top: 14px; width: 100%; max-width: 460px;
@@ -214,7 +243,7 @@
   }
 
   function ScreenCamera() {
-    var peer = null, stream = null, activeCall = null, facing = "environment", switching = false;
+    var peer = null, stream = null, activeCall = null, facing = "environment", switching = false, wakeLock = null;
     var container = el("div", { class: "screen" });
     function status(t) { var n = container.querySelector(".status-text"); if (n) n.textContent = t; }
     function live(on) {
@@ -226,7 +255,26 @@
       if (activeCall) try { activeCall.close(); } catch (e) {}
       if (peer) try { peer.destroy(); } catch (e) {}
       if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
+      if (wakeLock) try { wakeLock.release(); } catch (e) {}
+      wakeLock = null;
       activeCall = peer = stream = null;
+    }
+    async function keepAwake() {
+      if (!navigator.wakeLock || wakeLock) return;
+      try {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", function() { wakeLock = null; });
+      } catch (e) {}
+    }
+    function hideLocalScreen() {
+      if (!stream) { status("Démarre d'abord la caméra."); return; }
+      var overlay = container.querySelector(".blackout-overlay");
+      if (overlay) overlay.classList.add("active");
+      keepAwake();
+    }
+    function showLocalScreen() {
+      var overlay = container.querySelector(".blackout-overlay");
+      if (overlay) overlay.classList.remove("active");
     }
     async function switchCamera() {
       if (!stream || switching) { status("Démarre d'abord la caméra."); return; }
@@ -275,6 +323,7 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
         container.querySelector("video").srcObject = stream;
+        keepAwake();
       } catch (e) { status("Accès caméra refusé. Autorise la caméra et le micro dans les réglages du navigateur."); return; }
       var id;
       try { id = await cameraId(password); }
@@ -285,6 +334,7 @@
       peer.on("connection", function(conn) {
         conn.on("open", function() {
           conn.on("data", function(data) {
+            if (data === "switch-camera") { switchCamera(); return; }
             if (data !== "watch" || !stream) return;
             if (activeCall) try { activeCall.close(); } catch (e) {}
             activeCall = peer.call(conn.peer, stream);
@@ -306,7 +356,10 @@
       el("video", { autoplay: "", playsinline: "", muted: "true" }),
       el("div", { class: "overlay-top" }, [
         el("span", { class: "pill" }, ["📷 Mode caméra"]),
-        el("button", { class: "switch-camera", type: "button", title: "Changer de caméra", "aria-label": "Passer de la caméra arrière à la caméra avant", onclick: switchCamera }, ["🔄"])
+        el("div", { class: "remote-controls" }, [
+          el("button", { class: "landscape-button", type: "button", onclick: hideLocalScreen }, ["⬛ Écran noir"]),
+          el("button", { class: "switch-camera", type: "button", title: "Changer de caméra", "aria-label": "Passer de la caméra arrière à la caméra avant", onclick: switchCamera }, ["🔄"])
+        ])
       ])
     ]));
     container.appendChild(el("div", { class: "card" }, [
@@ -317,13 +370,16 @@
       el("div", { class: "security-note" }, ["Utilise au moins 8 caractères difficiles à deviner. Le mot de passe n'est pas envoyé tel quel."])
     ]));
     container.appendChild(el("div", { class: "status-text" }, [""]));
+    container.appendChild(el("div", { class: "blackout-overlay", role: "button", tabindex: "0", onclick: showLocalScreen }, [
+      el("div", { class: "blackout-restore" }, ["Toucher l'écran pour réafficher les commandes"])
+    ]));
     return container;
   }
 
   function ScreenViewer() {
     var peer = null, conn = null, call = null;
     var container = el("div", { class: "screen" });
-    function status(t) { var n = container.querySelector(".status-text"); if (n) n.textContent = t; }
+    function status(t) { container.querySelectorAll(".status-text").forEach(function(n) { n.textContent = t; }); }
     function live(on) {
       var d = container.querySelector(".dot"), l = container.querySelector(".conn-label"), ph = container.querySelector(".placeholder");
       if (d) d.className = "dot" + (on ? " ok" : "");
@@ -337,6 +393,26 @@
       peer = conn = call = null; live(false);
       var v = container.querySelector("video"); if (v) v.srcObject = null;
       if (showSetup) { container.querySelector(".setup").style.display = "flex"; container.querySelector(".view-area").style.display = "none"; }
+    }
+    function remoteSwitchCamera() {
+      if (!conn || !conn.open) { status("La caméra n'est pas encore connectée."); return; }
+      conn.send("switch-camera");
+      status("Changement de caméra demandé…");
+    }
+    async function openLandscape() {
+      var area = container.querySelector(".view-area");
+      var video = container.querySelector(".viewer-video video");
+      try {
+        if (area.requestFullscreen) await area.requestFullscreen();
+        else if (area.webkitRequestFullscreen) await area.webkitRequestFullscreen();
+        else if (video && video.webkitEnterFullscreen) { video.webkitEnterFullscreen(); return; }
+        if (screen.orientation && screen.orientation.lock) await screen.orientation.lock("landscape");
+      } catch (e) {
+        if (video && video.webkitEnterFullscreen) {
+          try { video.webkitEnterFullscreen(); return; } catch (ignored) {}
+        }
+        status("Tourne le téléphone horizontalement pour le mode paysage.");
+      }
     }
     async function connect() {
       var password = container.querySelector(".viewer-password").value;
@@ -387,7 +463,13 @@
       el("div", { class: "video-wrap viewer-video", style: "flex:1;" }, [
         el("video", { autoplay: "", playsinline: "" }),
         el("div", { class: "placeholder", style: "position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; color:var(--muted);" }, [el("div", { class: "placeholder-icon" }, ["📡"]), el("div", {}, ["En attente de l'image…"])]),
-        el("div", { class: "overlay-top" }, [el("span", { class: "pill" }, ["👁️ En direct — non enregistré"])])
+        el("div", { class: "overlay-top" }, [
+          el("span", { class: "pill" }, ["👁️ En direct"]),
+          el("div", { class: "remote-controls" }, [
+            el("button", { class: "landscape-button", type: "button", onclick: openLandscape }, ["⛶ Paysage"]),
+            el("button", { class: "switch-camera", type: "button", title: "Changer la caméra à distance", "aria-label": "Changer la caméra à distance", onclick: remoteSwitchCamera }, ["🔄"])
+          ])
+        ])
       ]),
       el("div", { class: "status-text" }, [""]),
       el("button", { class: "btn ghost", style: "margin:10px auto 0;", onclick: function() { cleanup(true); status("Déconnecté."); } }, ["Se déconnecter"])
