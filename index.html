@@ -80,6 +80,8 @@
     display: flex; align-items: center; justify-content: center;
     min-height: 30vh; border: 1px solid var(--border); flex-shrink: 0;
   }
+  .camera-video { min-height: 55vh; min-height: 55dvh; }
+  .viewer-video { min-height: calc(100vh - 145px); min-height: calc(100dvh - 145px); }
   video { width: 100%; height: 100%; object-fit: cover; background: #000; }
   .overlay-top {
     position: absolute; top: 0; left: 0; right: 0;
@@ -90,6 +92,12 @@
     background: rgba(0,0,0,0.45); color: #fff; padding: 6px 11px; border-radius: 999px;
     font-size: 12.5px; display: flex; align-items: center; gap: 6px;
   }
+  .switch-camera {
+    background: rgba(0,0,0,0.58); color: #fff; border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 999px; min-width: 44px; min-height: 44px; padding: 8px 13px;
+    font-size: 21px; cursor: pointer;
+  }
+  .switch-camera:active { transform: scale(0.96); }
   .card {
     background: var(--panel); border: 1px solid var(--border); border-radius: 16px;
     padding: 16px; margin-top: 14px; width: 100%; max-width: 460px;
@@ -206,7 +214,7 @@
   }
 
   function ScreenCamera() {
-    var peer = null, stream = null, activeCall = null;
+    var peer = null, stream = null, activeCall = null, facing = "environment", switching = false;
     var container = el("div", { class: "screen" });
     function status(t) { var n = container.querySelector(".status-text"); if (n) n.textContent = t; }
     function live(on) {
@@ -220,6 +228,44 @@
       if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
       activeCall = peer = stream = null;
     }
+    async function switchCamera() {
+      if (!stream || switching) { status("Démarre d'abord la caméra."); return; }
+      switching = true;
+      var button = container.querySelector(".switch-camera");
+      if (button) button.disabled = true;
+      var nextFacing = facing === "environment" ? "user" : "environment";
+      var oldTrack = stream.getVideoTracks()[0];
+      var sender = null;
+      if (activeCall && activeCall.peerConnection) {
+        sender = activeCall.peerConnection.getSenders().find(function(s) { return s.track && s.track.kind === "video"; });
+      }
+      status(nextFacing === "environment" ? "Passage à la caméra arrière…" : "Passage à la caméra avant…");
+      try {
+        if (oldTrack) { stream.removeTrack(oldTrack); oldTrack.stop(); }
+        var newVideoStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+        var newTrack = newVideoStream.getVideoTracks()[0];
+        if (!newTrack) throw new Error("no-video-track");
+        if (sender) await sender.replaceTrack(newTrack);
+        stream.addTrack(newTrack);
+        container.querySelector("video").srcObject = stream;
+        facing = nextFacing;
+        status(facing === "environment" ? "Caméra arrière activée." : "Caméra avant activée.");
+      } catch (e) {
+        try {
+          var restored = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false });
+          var restoredTrack = restored.getVideoTracks()[0];
+          if (sender && restoredTrack) await sender.replaceTrack(restoredTrack);
+          if (restoredTrack) stream.addTrack(restoredTrack);
+          container.querySelector("video").srcObject = stream;
+        } catch (restoreError) {}
+        status("Impossible de changer de caméra sur cet appareil.");
+      }
+      switching = false;
+      if (button) button.disabled = false;
+    }
     async function start() {
       var password = container.querySelector(".camera-password").value;
       if (password.length < 8) { status("Choisis un mot de passe d'au moins 8 caractères."); return; }
@@ -227,7 +273,7 @@
       cleanup();
       status("Ouverture de la caméra…");
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
         container.querySelector("video").srcObject = stream;
       } catch (e) { status("Accès caméra refusé. Autorise la caméra et le micro dans les réglages du navigateur."); return; }
       var id;
@@ -256,9 +302,12 @@
       el("button", { class: "iconbtn", onclick: function() { cleanup(); render(ScreenHome()); } }, ["← Retour"]),
       el("div", { class: "pill" }, [el("span", { class: "dot" }), el("span", { class: "conn-label" }, ["Arrêtée"])])
     ]));
-    container.appendChild(el("div", { class: "video-wrap" }, [
+    container.appendChild(el("div", { class: "video-wrap camera-video" }, [
       el("video", { autoplay: "", playsinline: "", muted: "true" }),
-      el("div", { class: "overlay-top" }, [el("span", { class: "pill" }, ["📷 Mode caméra"])])
+      el("div", { class: "overlay-top" }, [
+        el("span", { class: "pill" }, ["📷 Mode caméra"]),
+        el("button", { class: "switch-camera", type: "button", title: "Changer de caméra", "aria-label": "Passer de la caméra arrière à la caméra avant", onclick: switchCamera }, ["🔄"])
+      ])
     ]));
     container.appendChild(el("div", { class: "card" }, [
       el("h3", {}, ["Mot de passe de la caméra"]),
@@ -335,7 +384,7 @@
       el("div", { class: "status-text" }, [""])
     ]));
     var viewArea = el("div", { class: "screen view-area", style: "display:none;" }, [
-      el("div", { class: "video-wrap", style: "flex:1;" }, [
+      el("div", { class: "video-wrap viewer-video", style: "flex:1;" }, [
         el("video", { autoplay: "", playsinline: "" }),
         el("div", { class: "placeholder", style: "position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:10px; color:var(--muted);" }, [el("div", { class: "placeholder-icon" }, ["📡"]), el("div", {}, ["En attente de l'image…"])]),
         el("div", { class: "overlay-top" }, [el("span", { class: "pill" }, ["👁️ En direct — non enregistré"])])
