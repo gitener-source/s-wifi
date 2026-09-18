@@ -6,6 +6,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
 <title>Surveillance WiFi</title>
 <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
 <style>
@@ -304,15 +305,34 @@
         wakeLock.addEventListener("release", function() { wakeLock = null; });
       } catch (e) {}
     }
-    function hideLocalScreen() {
+    async function hideLocalScreen() {
       if (!stream) { status("Démarre d'abord la caméra."); return; }
       var overlay = container.querySelector(".blackout-overlay");
+      var preview = container.querySelector(".camera-video video");
+      if (preview) {
+        preview.pause();
+        preview.srcObject = null;
+      }
       if (overlay) overlay.classList.add("active");
       keepAwake();
+      if (overlay && overlay.requestFullscreen) {
+        try { await overlay.requestFullscreen(); } catch (e) {}
+      } else if (overlay && overlay.webkitRequestFullscreen) {
+        try { await overlay.webkitRequestFullscreen(); } catch (e) {}
+      }
     }
-    function showLocalScreen() {
+    async function showLocalScreen() {
       var overlay = container.querySelector(".blackout-overlay");
       if (overlay) overlay.classList.remove("active");
+      try {
+        if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen();
+        else if (document.webkitFullscreenElement && document.webkitExitFullscreen) await document.webkitExitFullscreen();
+      } catch (e) {}
+      var preview = container.querySelector(".camera-video video");
+      if (preview && stream) {
+        preview.srcObject = stream;
+        preview.play().catch(function() {});
+      }
     }
     async function switchCamera() {
       if (!stream || switching) { status("Démarre d'abord la caméra."); return; }
@@ -336,7 +356,7 @@
         if (!newTrack) throw new Error("no-video-track");
         if (sender) await sender.replaceTrack(newTrack);
         stream.addTrack(newTrack);
-        container.querySelector("video").srcObject = stream;
+        if (!container.querySelector(".blackout-overlay.active")) container.querySelector("video").srcObject = stream;
         facing = nextFacing;
         status(facing === "environment" ? "Caméra arrière activée." : "Caméra avant activée.");
       } catch (e) {
@@ -345,7 +365,7 @@
           var restoredTrack = restored.getVideoTracks()[0];
           if (sender && restoredTrack) await sender.replaceTrack(restoredTrack);
           if (restoredTrack) stream.addTrack(restoredTrack);
-          container.querySelector("video").srcObject = stream;
+          if (!container.querySelector(".blackout-overlay.active")) container.querySelector("video").srcObject = stream;
         } catch (restoreError) {}
         status("Impossible de changer de caméra sur cet appareil.");
       }
