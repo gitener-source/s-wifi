@@ -282,25 +282,29 @@
   }
 
   function ScreenCamera() {
-    var peer = null, stream = null, activeCall = null, facing = "environment", switching = false, wakeLock = null;
+    var peer = null, stream = null, activeCalls = new Map(), facing = "environment", switching = false, wakeLock = null;
     var reconnectTimer = null, stopped = true;
     var container = el("div", { class: "screen" });
     function status(t) { var n = container.querySelector(".status-text"); if (n) n.textContent = t; }
     function live(on) {
       var d = container.querySelector(".dot"), l = container.querySelector(".conn-label");
       if (d) d.className = "dot" + (on ? " live" : "");
-      if (l) l.textContent = on ? "En direct" : (peer ? "Prête" : "Arrêtée");
+      if (l) {
+        if (on) l.textContent = "En direct · " + activeCalls.size + (activeCalls.size > 1 ? " écrans" : " écran");
+        else l.textContent = peer ? "Prête" : "Arrêtée";
+      }
     }
     function cleanup() {
       stopped = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
-      if (activeCall) try { activeCall.close(); } catch (e) {}
+      activeCalls.forEach(function(c) { try { c.close(); } catch (e) {} });
+      activeCalls.clear();
       if (peer) try { peer.destroy(); } catch (e) {}
       if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
       if (wakeLock) try { wakeLock.release(); } catch (e) {}
       wakeLock = null;
-      activeCall = peer = stream = null;
+      peer = stream = null;
     }
     function reconnectCameraPeer() {
       if (stopped || !peer || peer.destroyed || reconnectTimer) return;
@@ -357,10 +361,12 @@
       if (button) button.disabled = true;
       var nextFacing = facing === "environment" ? "user" : "environment";
       var oldTrack = stream.getVideoTracks()[0];
-      var sender = null;
-      if (activeCall && activeCall.peerConnection) {
-        sender = activeCall.peerConnection.getSenders().find(function(s) { return s.track && s.track.kind === "video"; });
-      }
+      var senders = [];
+      activeCalls.forEach(function(c) {
+        if (!c || !c.peerConnection) return;
+        var s = c.peerConnection.getSenders().find(function(item) { return item.track && item.track.kind === "video"; });
+        if (s) senders.push(s);
+      });
       status(nextFacing === "environment" ? "Passage à la caméra arrière…" : "Passage à la caméra avant…");
       try {
         if (oldTrack) { stream.removeTrack(oldTrack); oldTrack.stop(); }
@@ -370,7 +376,7 @@
         });
         var newTrack = newVideoStream.getVideoTracks()[0];
         if (!newTrack) throw new Error("no-video-track");
-        if (sender) await sender.replaceTrack(newTrack);
+        await Promise.all(senders.map(function(s) { return s.replaceTrack(newTrack); }));
         stream.addTrack(newTrack);
         if (!container.querySelector(".blackout-overlay.active")) container.querySelector("video").srcObject = stream;
         facing = nextFacing;
@@ -379,7 +385,7 @@
         try {
           var restored = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing } }, audio: false });
           var restoredTrack = restored.getVideoTracks()[0];
-          if (sender && restoredTrack) await sender.replaceTrack(restoredTrack);
+          if (restoredTrack) await Promise.all(senders.map(function(s) { return s.replaceTrack(restoredTrack); }));
           if (restoredTrack) stream.addTrack(restoredTrack);
           if (!container.querySelector(".blackout-overlay.active")) container.querySelector("video").srcObject = stream;
         } catch (restoreError) {}
@@ -409,8 +415,8 @@
       peer.on("open", function() {
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = null;
-        live(!!activeCall);
-        status(activeCall ? "Liaison rétablie automatiquement." : "Caméra prête. Entre le même mot de passe sur l'écran de contrôle.");
+        live(activeCalls.size > 0);
+        status(activeCalls.size > 0 ? "Liaison rétablie automatiquement avec les écrans de contrôle." : "Caméra prête. Entre le même mot de passe sur les écrans de contrôle.");
         container.querySelector(".start-btn").textContent = "Redémarrer la caméra";
       });
       peer.on("connection", function(conn) {
@@ -419,18 +425,25 @@
             if (data === "ping") { try { conn.send("pong"); } catch (e) {} return; }
             if (data === "switch-camera") { switchCamera(); return; }
             if (data !== "watch" || !stream) return;
-            if (activeCall) try { activeCall.close(); } catch (e) {}
+            var viewerId = conn.peer;
+            var previousCall = activeCalls.get(viewerId);
+            if (previousCall) try { previousCall.close(); } catch (e) {}
             var newCall = peer.call(conn.peer, stream);
-            activeCall = newCall;
+            activeCalls.set(viewerId, newCall);
             newCall.on("close", function() {
-              if (activeCall !== newCall) return;
-              activeCall = null; live(false); status("Image interrompue. En attente de la reconnexion automatique…");
+              if (activeCalls.get(viewerId) !== newCall) return;
+              activeCalls.delete(viewerId);
+              live(activeCalls.size > 0);
+              status(activeCalls.size > 0 ? "Un écran s'est déconnecté. Les autres continuent de recevoir l'image." : "Tous les écrans sont déconnectés. En attente de reconnexion…");
             });
             newCall.on("error", function() {
-              if (activeCall !== newCall) return;
-              activeCall = null; live(false); status("Liaison vidéo interrompue. Reconnexion en attente…");
+              if (activeCalls.get(viewerId) !== newCall) return;
+              activeCalls.delete(viewerId);
+              live(activeCalls.size > 0);
+              status(activeCalls.size > 0 ? "Un écran a perdu la liaison. Les autres restent connectés." : "Toutes les liaisons vidéo sont interrompues. Reconnexion en attente…");
             });
-            live(true); status("Image envoyée à l'écran de contrôle.");
+            live(true);
+            status("Image envoyée simultanément à " + activeCalls.size + (activeCalls.size > 1 ? " écrans de contrôle." : " écran de contrôle."));
           });
         });
       });
