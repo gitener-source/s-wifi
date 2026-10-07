@@ -284,7 +284,15 @@
   function ScreenCamera() {
     var peer = null, stream = null, activeCalls = new Map(), facing = "environment", switching = false, wakeLock = null;
     var reconnectTimer = null, stopped = true;
+    var peerId = null, watchdog = null, recovering = false, mutedSince = 0, logLines = [];
     var container = el("div", { class: "screen" });
+    function log(msg) {
+      var d = new Date(), t = ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2);
+      logLines.push(t + " " + msg);
+      if (logLines.length > 6) logLines.shift();
+      var n = container.querySelector(".diag");
+      if (n) n.textContent = logLines.join("\n");
+    }
     function status(t) { var n = container.querySelector(".status-text"); if (n) n.textContent = t; }
     function live(on) {
       var d = container.querySelector(".dot"), l = container.querySelector(".conn-label");
@@ -296,12 +304,15 @@
     }
     function cleanup() {
       stopped = true;
+      if (watchdog) clearInterval(watchdog);
+      watchdog = null;
+      document.removeEventListener("visibilitychange", onVisible);
       if (reconnectTimer) clearTimeout(reconnectTimer);
       reconnectTimer = null;
       activeCalls.forEach(function(c) { try { c.close(); } catch (e) {} });
       activeCalls.clear();
       if (peer) try { peer.destroy(); } catch (e) {}
-      if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
+      if (stream) stream.getTracks().forEach(function(t) { t.onended = t.onmute = t.onunmute = null; t.stop(); });
       if (wakeLock) try { wakeLock.release(); } catch (e) {}
       wakeLock = null;
       peer = stream = null;
@@ -322,17 +333,68 @@
       if (!navigator.wakeLock || wakeLock) return;
       try {
         wakeLock = await navigator.wakeLock.request("screen");
-        wakeLock.addEventListener("release", function() { wakeLock = null; });
+        wakeLock.addEventListener("release", function() { wakeLock = null; log("Veille : verrou perdu"); });
       } catch (e) {}
+    }
+    function onVisible() {
+      if (stopped) return;
+      if (document.visibilityState === "visible") { keepAwake(); tick(); }
+    }
+    function watchTrack(t) {
+      t.onended = function() { log("iOS a coupé " + (t.kind === "video" ? "la caméra" : "le micro")); recoverMedia(); };
+      t.onmute = function() { if (t.kind === "video") { mutedSince = Date.now(); log("Image gelée par iOS"); } };
+      t.onunmute = function() { if (t.kind === "video") { mutedSince = 0; log("Image revenue"); } };
+    }
+    async function recoverMedia() {
+      if (stopped || recovering || switching) return;
+      recovering = true;
+      try {
+        var fresh = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
+        activeCalls.forEach(function(c) {
+          if (!c || !c.peerConnection) return;
+          c.peerConnection.getSenders().forEach(function(snd) {
+            if (!snd.track) return;
+            var nt = fresh.getTracks().find(function(x) { return x.kind === snd.track.kind; });
+            if (nt) snd.replaceTrack(nt).catch(function() {});
+          });
+        });
+        var old = stream;
+        stream = fresh;
+        stream.getTracks().forEach(watchTrack);
+        if (old) old.getTracks().forEach(function(t) { t.onended = t.onmute = t.onunmute = null; try { t.stop(); } catch (e) {} });
+        mutedSince = 0;
+        var pv = container.querySelector(".camera-video video");
+        if (pv) { pv.srcObject = stream; pv.play().catch(function() {}); }
+        keepAwake();
+        log("Caméra relancée automatiquement");
+      } catch (e) { log("Relance caméra impossible : " + (e && e.name ? e.name : e)); }
+      recovering = false;
+    }
+    function tick() {
+      if (stopped) return;
+      var vt = stream && stream.getVideoTracks()[0];
+      if (!vt || vt.readyState !== "live" || (mutedSince && Date.now() - mutedSince > 15000)) recoverMedia();
+      if (!peer || peer.destroyed) {
+        log("Liaison recréée");
+        setupPeer();
+      } else if (peer.disconnected) {
+        try { peer.reconnect(); } catch (e) {}
+      }
+      if (!wakeLock && document.visibilityState === "visible") keepAwake();
+      var pv = container.querySelector(".camera-video video");
+      if (pv && pv.srcObject && pv.paused) pv.play().catch(function() {});
+    }
+    function startWatchdog() {
+      if (watchdog) clearInterval(watchdog);
+      watchdog = setInterval(tick, 5000);
+      document.removeEventListener("visibilitychange", onVisible);
+      document.addEventListener("visibilitychange", onVisible);
     }
     async function hideLocalScreen() {
       if (!stream) { status("Démarre d'abord la caméra."); return; }
       var overlay = container.querySelector(".blackout-overlay");
       var preview = container.querySelector(".camera-video video");
-      if (preview) {
-        preview.pause();
-        preview.srcObject = null;
-      }
+      if (preview && preview.paused && stream) preview.play().catch(function() {});
       if (overlay) overlay.classList.add("active");
       keepAwake();
       if (overlay && overlay.requestFullscreen) {
@@ -405,13 +467,21 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: true });
         container.querySelector("video").srcObject = stream;
+        stream.getTracks().forEach(watchTrack);
         keepAwake();
+        startWatchdog();
+        log("Caméra démarrée");
       } catch (e) { status("Accès caméra refusé. Autorise la caméra et le micro dans les réglages du navigateur."); return; }
       var id;
       try { id = await cameraId(password); }
       catch (e) { status("Ce navigateur ne permet pas de sécuriser le mot de passe."); cleanup(); return; }
       status("Connexion au service…");
-      peer = new Peer(id);
+      peerId = id;
+      setupPeer();
+    }
+    function setupPeer() {
+      if (peer) try { peer.destroy(); } catch (e) {}
+      peer = new Peer(peerId);
       peer.on("open", function() {
         if (reconnectTimer) clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -448,7 +518,7 @@
         });
       });
       peer.on("error", function(err) {
-        live(false); status(peerMessage(err));
+        live(false); status(peerMessage(err)); log("Erreur liaison : " + (err && err.type));
         if (err && ["network", "server-error", "socket-error", "socket-closed"].indexOf(err.type) !== -1) reconnectCameraPeer();
       });
       peer.on("disconnected", reconnectCameraPeer);
@@ -477,6 +547,7 @@
       el("button", { class: "forget-button", type: "button", onclick: function() { forgetPassword(container.querySelector(".camera-password"), status); } }, ["Oublier le mot de passe"])
     ]));
     container.appendChild(el("div", { class: "status-text" }, [""]));
+    container.appendChild(el("div", { class: "diag", style: "white-space:pre-line;font-size:11px;opacity:.55;padding:6px 14px;" }, [""]));
     container.appendChild(el("div", { class: "blackout-overlay", role: "button", tabindex: "0", onclick: showLocalScreen }, [
       el("div", { class: "blackout-restore" }, ["Toucher l'écran pour réafficher les commandes"])
     ]));
